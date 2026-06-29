@@ -265,8 +265,6 @@ function Install-PythonLikeInstaller {
     }
 }
 
-# ===== ФУНКЦИЯ Create-RunnerFile УДАЛЕНА =====
-
 function Add-AutoRun {
     param([string]$n, [string]$rf)
     $rp = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
@@ -360,11 +358,8 @@ function chk {
         $installed = $true
     }
     
-    # ===== УДАЛЕНА УСТАНОВКА RUNNER ЧЕРЕЗ Create-RunnerFile =====
-    # Теперь просто проверяем наличие runner файла, но НЕ создаем его
     if (-not $r.rf) {
         Write-Host "  [*] Runner script not found, skipping creation..." -ForegroundColor Yellow
-        # Не создаем runner, просто пропускаем
     }
     
     if (-not $r.ar -and $r.rf) {
@@ -440,7 +435,7 @@ function chk {
     Write-Host "  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor DarkGray
     Write-Host ""
     Write-Host "  Press any key to exit..." -ForegroundColor Gray
-    $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown)
+    $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")  # <--- ИСПРАВЛЕНО!
 }
 
 chk
